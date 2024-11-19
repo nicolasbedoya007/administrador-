@@ -8,6 +8,10 @@ import java.sql.*;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.nio.file.Files;
 
 public class FileApp {
     private static Connection connection;
@@ -131,7 +135,8 @@ public class FileApp {
     }
 
     private static void createFileManagerPanel() {
-        fileManagerPanel = new JPanel(new BorderLayout());
+        fileManagerPanel = new JPanel(new BorderLayout(10, 10));
+        fileManagerPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
         JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton logoutButton = new JButton("Cerrar Sesión");
@@ -144,24 +149,38 @@ public class FileApp {
         populateFileTree(root);
         JScrollPane treeScrollPane = new JScrollPane(fileTree);
 
-        JPanel buttonPanel = new JPanel(new FlowLayout());
-        JButton refreshButton = new JButton("Actualizar");
-        JButton addButton = new JButton("Agregar Archivo");
-        JButton deleteButton = new JButton("Eliminar Archivo");
-        JButton renameButton = new JButton("Renombrar Archivo");
+        JPanel buttonPanel = new JPanel(new GridLayout(2, 3, 5, 5));
+        buttonPanel.setBorder(BorderFactory.createEmptyBorder(5, 0, 5, 0));
+
+        Dimension buttonSize = new Dimension(150, 30);
+        
+        JButton refreshButton = createStyledButton("Actualizar", buttonSize);
+        JButton addButton = createStyledButton("Agregar Archivo", buttonSize);
+        JButton deleteButton = createStyledButton("Eliminar Archivo", buttonSize);
+        JButton renameButton = createStyledButton("Renombrar Archivo", buttonSize);
+        JButton uploadButton = createStyledButton("Cargar Archivo", buttonSize);
+        JButton downloadButton = createStyledButton("Descargar Archivo", buttonSize);
+
         buttonPanel.add(refreshButton);
         buttonPanel.add(addButton);
         buttonPanel.add(deleteButton);
         buttonPanel.add(renameButton);
+        buttonPanel.add(uploadButton);
+        buttonPanel.add(downloadButton);
+
+        JPanel buttonWrapperPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        buttonWrapperPanel.add(buttonPanel);
 
         fileManagerPanel.add(topPanel, BorderLayout.NORTH);
         fileManagerPanel.add(treeScrollPane, BorderLayout.CENTER);
-        fileManagerPanel.add(buttonPanel, BorderLayout.SOUTH);
+        fileManagerPanel.add(buttonWrapperPanel, BorderLayout.SOUTH);
 
         refreshButton.addActionListener(e -> refreshFileTree(root, treeModel));
         addButton.addActionListener(e -> addFile(root, fileTree));
         deleteButton.addActionListener(e -> deleteFile(fileTree));
         renameButton.addActionListener(e -> renameFile(fileTree));
+        uploadButton.addActionListener(e -> uploadFile());
+        downloadButton.addActionListener(e -> downloadFile());
 
         if (!isAdmin) {
             deleteButton.setEnabled(false);
@@ -175,6 +194,15 @@ public class FileApp {
                 showFileDetails(file);
             }
         });
+    }
+
+    private static JButton createStyledButton(String text, Dimension size) {
+        JButton button = new JButton(text);
+        button.setPreferredSize(size);
+        button.setMinimumSize(size);
+        button.setMaximumSize(size);
+        button.setFont(new Font("Arial", Font.PLAIN, 12));
+        return button;
     }
 
     private static void populateFileTree(DefaultMutableTreeNode node) {
@@ -248,6 +276,75 @@ public class FileApp {
                     JOptionPane.showMessageDialog(mainFrame, "No se pudo renombrar el archivo", "Error", JOptionPane.ERROR_MESSAGE);
                 }
             }
+        }
+    }
+
+    private static void uploadFile() {
+        JFileChooser fileChooser = new JFileChooser();
+        int result = fileChooser.showOpenDialog(mainFrame);
+        if (result == JFileChooser.APPROVE_OPTION) {
+            File selectedFile = fileChooser.getSelectedFile();
+            try {
+                FileInputStream fis = new FileInputStream(selectedFile);
+                PreparedStatement pstmt = connection.prepareStatement(
+                    "INSERT INTO files (file_name, file_type, file_size, file_data) VALUES (?, ?, ?, ?)");
+                pstmt.setString(1, selectedFile.getName());
+                pstmt.setString(2, Files.probeContentType(selectedFile.toPath()));
+                pstmt.setLong(3, selectedFile.length());
+                pstmt.setBinaryStream(4, fis, selectedFile.length());
+                pstmt.executeUpdate();
+                JOptionPane.showMessageDialog(mainFrame, "Archivo cargado con éxito", "Éxito", JOptionPane.INFORMATION_MESSAGE);
+            } catch (Exception e) {
+                e.printStackTrace();
+                JOptionPane.showMessageDialog(mainFrame, "Error al cargar el archivo: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private static void downloadFile() {
+        try {
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery("SELECT id, file_name FROM files");
+            
+            JComboBox<String> fileList = new JComboBox<>();
+            while (rs.next()) {
+                fileList.addItem(rs.getInt("id") + ": " + rs.getString("file_name"));
+            }
+            
+            int result = JOptionPane.showConfirmDialog(mainFrame, fileList, "Seleccione un archivo para descargar", JOptionPane.OK_CANCEL_OPTION);
+            if (result == JOptionPane.OK_OPTION) {
+                String selection = (String) fileList.getSelectedItem();
+                int fileId = Integer.parseInt(selection.split(":")[0]);
+                
+                PreparedStatement pstmt = connection.prepareStatement("SELECT file_name, file_data FROM files WHERE id = ?");
+                pstmt.setInt(1, fileId);
+                rs = pstmt.executeQuery();
+                
+                if (rs.next()) {
+                    String fileName = rs.getString("file_name");
+                    InputStream is = rs.getBinaryStream("file_data");
+                    
+                    JFileChooser fileChooser = new JFileChooser();
+                    fileChooser.setSelectedFile(new File(fileName));
+                    result = fileChooser.showSaveDialog(mainFrame);
+                    
+                    if (result == JFileChooser.APPROVE_OPTION) {
+                        File outputFile = fileChooser.getSelectedFile();
+                        FileOutputStream fos = new FileOutputStream(outputFile);
+                        byte[] buffer = new byte[1024];
+                        int length;
+                        while ((length = is.read(buffer)) != -1) {
+                            fos.write(buffer, 0, length);
+                        }
+                        fos.close();
+                        is.close();
+                        JOptionPane.showMessageDialog(mainFrame, "Archivo descargado con éxito", "Éxito", JOptionPane.INFORMATION_MESSAGE);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(mainFrame, "Error al descargar el archivo: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
         }
     }
 
@@ -354,17 +451,12 @@ public class FileApp {
 
     private static void connectToDatabase() {
         try {
-            // Cargar explícitamente el driver
             Class.forName("com.mysql.cj.jdbc.Driver");
-            
-            // URL de conexión con parámetros adicionales
             String url = "jdbc:mysql://127.0.0.1:3305/eadj?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC";
             String user = "root";
             String password = "";
-            
             connection = DriverManager.getConnection(url, user, password);
             System.out.println("Conexión exitosa a la base de datos");
-            
         } catch (ClassNotFoundException e) {
             System.out.println("Error: No se pudo cargar el driver JDBC");
             e.printStackTrace();
@@ -378,8 +470,6 @@ public class FileApp {
         try {
             connectToDatabase();
             System.out.println("Conexión exitosa a la base de datos.");
-            
-            // Realizar una consulta de prueba
             String query = "SELECT COUNT(*) FROM users";
             try (Statement stmt = connection.createStatement();
                  ResultSet rs = stmt.executeQuery(query)) {
@@ -442,4 +532,4 @@ public class FileApp {
             return false;
         }
     }
-} 
+}
